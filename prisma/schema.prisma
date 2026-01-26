@@ -1,0 +1,173 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum NodeType {
+  MAINLINE
+  BRANCH
+  JUNCTION
+  HOUSEHOLD
+}
+
+enum SensorType {
+  MAINLINE_FLOW
+  BRANCH_JUNCTION_FLOW
+  HOUSEHOLD_FLOW
+}
+
+enum DataSource {
+  MANUAL
+  CSV
+  EPANET
+  SENSOR
+}
+
+enum LeakSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum LeakStatus {
+  DETECTED
+  CONFIRMED
+  LOCALIZED
+  RESOLVED
+  FALSE_POSITIVE
+}
+
+model NetworkNode {
+  id            String   @id @default(uuid())
+  nodeId        String   @unique // EPANET ID or custom ID (e.g., MAIN_01, HH_001)
+  nodeType      NodeType
+  parentId      String?
+  parent        NetworkNode? @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children      NetworkNode[] @relation("NodeHierarchy")
+  zoneCode      String?
+  branchCode    String?
+  sequenceNumber Int?
+  epanetNodeId  String? // Link to EPANET model if available
+  location      String? // Description or coordinates
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  sensors       Sensor[]
+  partition     NetworkPartition?
+  sensitivityMatrixLeaks SensitivityMatrix[] @relation("LeakSensitivity")
+  leakDetections LeakDetection[]
+
+  @@index([parentId])
+  @@index([nodeType])
+  @@index([zoneCode, branchCode])
+  @@map("network_nodes")
+}
+
+model NetworkPartition {
+  id            String   @id @default(uuid())
+  partitionId   String   @unique // DMA_MAIN_01
+  mainlineId    String   @unique // One partition per mainline (one-to-one)
+  mainline      NetworkNode @relation(fields: [mainlineId], references: [id])
+  name          String?
+  description   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  sensors       Sensor[]
+  leakDetections LeakDetection[]
+
+  @@map("network_partitions")
+}
+
+model Sensor {
+  id            String   @id @default(uuid())
+  sensorId      String   @unique // MAIN_01, JUNC_01, HH_001
+  sensorType    SensorType
+  nodeId        String
+  node          NetworkNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  partitionId   String?
+  partition     NetworkPartition? @relation(fields: [partitionId], references: [id], onDelete: SetNull)
+  description   String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  readings      SensorReading[]
+  sensitivityMatrixReadings SensitivityMatrix[] @relation("SensorSensitivity")
+
+  @@index([nodeId])
+  @@index([partitionId])
+  @@index([sensorType])
+  @@map("sensors")
+}
+
+model SensorReading {
+  id            String   @id @default(uuid())
+  sensorId      String
+  sensor        Sensor   @relation(fields: [sensorId], references: [id], onDelete: Cascade)
+  flowValue     Float    // Flow in L/s
+  timestamp     DateTime
+  source        DataSource @default(MANUAL)
+  createdAt     DateTime @default(now())
+
+  @@index([sensorId, timestamp])
+  @@index([timestamp])
+  @@index([sensorId])
+  @@map("sensor_readings")
+}
+
+model SensitivityMatrix {
+  id              String   @id @default(uuid())
+  leakNodeId      String   // Which node has the leak
+  sensorId        String   // Which sensor is affected
+  sensitivityValue Float   // How much sensor reading changes per unit leak (L/s per L/s)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  leakNode        NetworkNode @relation("LeakSensitivity", fields: [leakNodeId], references: [id], onDelete: Cascade)
+  sensor          Sensor @relation("SensorSensitivity", fields: [sensorId], references: [id], onDelete: Cascade)
+  
+  @@unique([leakNodeId, sensorId])
+  @@index([leakNodeId])
+  @@index([sensorId])
+  @@map("sensitivity_matrix")
+}
+
+model LeakDetection {
+  id              String   @id @default(uuid())
+  nodeId          String   // Node where leak was detected
+  partitionId     String?  // DMA where leak was detected (optional)
+  flowImbalance   Float    // Flow imbalance in L/s (inflow - outflow)
+  severity        LeakSeverity
+  status          LeakStatus @default(DETECTED)
+  detectedAt      DateTime
+  timestamp       DateTime  // Timestamp of readings used for detection
+  timeWindow      Int?      // Time window in seconds used for detection
+  threshold       Float?    // Threshold used for detection (L/s)
+  localizedNodeId String?   // Node identified as leak location by localization
+  localizationScore Float?  // Confidence score (0-1) for localization
+  localizedAt     DateTime? // When localization was performed
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  node            NetworkNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  partition       NetworkPartition? @relation(fields: [partitionId], references: [id], onDelete: SetNull)
+  
+  @@index([nodeId])
+  @@index([partitionId])
+  @@index([status])
+  @@index([detectedAt])
+  @@index([severity])
+  @@map("leak_detections")
+}
