@@ -16,6 +16,8 @@ export interface AutoPlacementResult {
   }>;
   summary: {
     mainlineSensors: number;
+    junctionSensors: number;
+    branchSensors: number;
     householdSensors: number;
   };
 }
@@ -30,9 +32,18 @@ export class AutoPlacementService {
     private readonly sensorsService: SensorsService,
   ) {}
 
-  async autoPlaceSensors(networkId: string): Promise<AutoPlacementResult> {
+  async autoPlaceSensors(
+    networkId: string,
+    targetCount: number = 12,
+  ): Promise<AutoPlacementResult> {
     if (!networkId) {
       throw new BadRequestException('Network ID is required for auto-placement');
+    }
+
+    if (targetCount < 1 || targetCount > 1000) {
+      throw new BadRequestException(
+        'Target count must be between 1 and 1000',
+      );
     }
 
     // Validate network exists
@@ -44,55 +55,45 @@ export class AutoPlacementService {
       throw new BadRequestException(`Network with ID ${networkId} not found`);
     }
 
-    // Get all MAINLINE nodes for this network
-    const mainlines = await this.prisma.networkNode.findMany({
-      where: {
-        networkId,
-        nodeType: NodeType.MAINLINE,
-      },
+    // Get all nodes that already have sensors
+    const existingSensors = await this.prisma.sensor.findMany({
+      where: { networkId },
+      select: { nodeId: true },
     });
-
-    // Get all HOUSEHOLD nodes for this network
-    const households = await this.prisma.networkNode.findMany({
-      where: {
-        networkId,
-        nodeType: NodeType.HOUSEHOLD,
-      },
-    });
-
-    if (mainlines.length === 0 && households.length === 0) {
-      throw new BadRequestException(
-        'No mainlines or households found. Import network first.',
-      );
-    }
+    const nodesWithSensors = new Set(existingSensors.map((s) => s.nodeId));
 
     this.logger.log(
-      `Auto-placing sensors: ${mainlines.length} mainlines, ${households.length} households`,
+      `Found ${nodesWithSensors.size} nodes with existing sensors. Target: ${targetCount} sensors.`,
     );
 
     const placedSensors: AutoPlacementResult['sensors'] = [];
     let mainlineCount = 0;
+    let junctionCount = 0;
+    let branchCount = 0;
     let householdCount = 0;
 
-    // Place sensors on mainlines
-    for (let i = 0; i < mainlines.length; i++) {
-      const mainline = mainlines[i];
-      const sensorId = `MAIN_${String(i + 1).padStart(2, '0')}`;
-
-      // Check if sensor already exists in this network
-      const existing = await this.prisma.sensor.findUnique({
-        where: {
-          networkId_sensorId: {
-            networkId,
-            sensorId,
-          },
+    // Step 1: Prioritize MAINLINE nodes (up to targetCount)
+    const mainlines = await this.prisma.networkNode.findMany({
+      where: {
+        networkId,
+        nodeType: NodeType.MAINLINE,
+        id: {
+          notIn: Array.from(nodesWithSensors),
         },
-      });
+      },
+      include: {
+        children: true,
+      },
+    });
 
-      if (existing) {
-        this.logger.warn(`Sensor ${sensorId} already exists in network ${networkId}, skipping`);
-        continue;
-      }
+    this.logger.log(
+      `Found ${mainlines.length} mainline nodes without sensors (${nodesWithSensors.size} already have sensors)`,
+    );
+
+    // Place sensors on mainlines (up to targetCount)
+    for (let i = 0; i < Math.min(mainlines.length, targetCount); i++) {
+      const mainline = mainlines[i];
+      const sensorId = `MAIN_${String(mainlineCount + 1).padStart(2, '0')}`;
 
       try {
         // Find DMA for this mainline
@@ -118,43 +119,49 @@ export class AutoPlacementService {
           location: mainline.location,
         });
 
+        nodesWithSensors.add(mainline.id);
         mainlineCount++;
-        } catch (error) {
-          this.logger.error(
-            `Failed to place sensor at mainline ${mainline.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
-            error instanceof Error ? error.stack : undefined,
-          );
-          // Continue with other sensors - don't fail entire placement
-        }
+      } catch (error) {
+        this.logger.error(
+          `Failed to place sensor at mainline ${mainline.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
+          error instanceof Error ? error.stack : undefined,
+        );
+        // Continue with other sensors
+      }
     }
 
-    // Place sensors on households (batch processing)
-    const batchSize = 100;
-    for (let i = 0; i < households.length; i += batchSize) {
-      const batch = households.slice(i, i + batchSize);
-      const batchPromises = batch.map(async (household, batchIndex) => {
-        const globalIndex = i + batchIndex;
-        const sensorId = `HH_${String(globalIndex + 1).padStart(3, '0')}`;
-
-        // Check if sensor already exists in this network
-        const existing = await this.prisma.sensor.findUnique({
-          where: {
-            networkId_sensorId: {
-              networkId,
-              sensorId,
-            },
+    // Step 2: If slots remain, select high-connectivity JUNCTION nodes
+    const remainingSlots = targetCount - placedSensors.length;
+    if (remainingSlots > 0) {
+      const junctions = await this.prisma.networkNode.findMany({
+        where: {
+          networkId,
+          nodeType: NodeType.JUNCTION,
+          id: {
+            notIn: Array.from(nodesWithSensors),
           },
-        });
+        },
+        include: {
+          children: true,
+        },
+      });
 
-        if (existing) {
-          this.logger.warn(`Sensor ${sensorId} already exists in network ${networkId}, skipping`);
-          return null;
-        }
+      // Sort by number of children (connectivity) - descending
+      junctions.sort((a, b) => b.children.length - a.children.length);
+
+      this.logger.log(
+        `Found ${junctions.length} junction nodes. Selecting top ${remainingSlots} by connectivity.`,
+      );
+
+      // Place sensors on top N junctions
+      for (let i = 0; i < Math.min(junctions.length, remainingSlots); i++) {
+        const junction = junctions[i];
+        const sensorId = `JUNC_${String(junctionCount + 1).padStart(2, '0')}`;
 
         try {
-          // Find DMA for this household
+          // Find DMA for this junction
           const mainlineId = await this.networkService.findMainlineForNode(
-            household.id,
+            junction.id,
           );
           let partitionId: string | null = null;
           if (mainlineId) {
@@ -166,44 +173,111 @@ export class AutoPlacementService {
 
           const sensor = await this.sensorsService.create({
             sensorId,
-            sensorType: SensorType.HOUSEHOLD_FLOW,
-            nodeId: household.id,
+            sensorType: SensorType.BRANCH_JUNCTION_FLOW,
+            nodeId: junction.id,
             partitionId,
-            description: `Auto-placed household sensor at ${household.nodeId}`,
+            description: `Auto-placed junction sensor at ${junction.nodeId} (connectivity: ${junction.children.length})`,
             isActive: true,
           });
 
-          return {
+          placedSensors.push({
             sensorId: sensor.sensorId,
             sensorType: sensor.sensorType,
             nodeId: sensor.nodeId,
-            nodeType: household.nodeType,
+            nodeType: junction.nodeType,
             partitionId: sensor.partitionId,
-            location: household.location,
-          };
+            location: junction.location,
+          });
+
+          nodesWithSensors.add(junction.id);
+          junctionCount++;
         } catch (error) {
           this.logger.error(
-            `Failed to place sensor at household ${household.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to place sensor at junction ${junction.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
             error instanceof Error ? error.stack : undefined,
           );
-          return null;
+          // Continue with other sensors
         }
+      }
+    }
+
+    // Step 3: If slots still remain, select BRANCH nodes with high connectivity
+    const remainingSlotsAfterJunctions = targetCount - placedSensors.length;
+    if (remainingSlotsAfterJunctions > 0) {
+      const branches = await this.prisma.networkNode.findMany({
+        where: {
+          networkId,
+          nodeType: NodeType.BRANCH,
+          id: {
+            notIn: Array.from(nodesWithSensors),
+          },
+        },
+        include: {
+          children: true,
+        },
       });
 
-      const batchResults = await Promise.all(batchPromises);
-      const validSensors = batchResults.filter(
-        (s) => s !== null,
-      ) as AutoPlacementResult['sensors'];
-      placedSensors.push(...validSensors);
-      householdCount += validSensors.length;
+      // Sort by number of children (connectivity) - descending
+      branches.sort((a, b) => b.children.length - a.children.length);
 
       this.logger.log(
-        `Processed batch ${Math.floor(i / batchSize) + 1}: ${validSensors.length} sensors placed`,
+        `Found ${branches.length} branch nodes. Selecting top ${remainingSlotsAfterJunctions} by connectivity.`,
       );
+
+      // Place sensors on top N branches
+      for (
+        let i = 0;
+        i < Math.min(branches.length, remainingSlotsAfterJunctions);
+        i++
+      ) {
+        const branch = branches[i];
+        const sensorId = `BRANCH_${String(branchCount + 1).padStart(2, '0')}`;
+
+        try {
+          // Find DMA for this branch
+          const mainlineId = await this.networkService.findMainlineForNode(
+            branch.id,
+          );
+          let partitionId: string | null = null;
+          if (mainlineId) {
+            const partition = await this.prisma.networkPartition.findUnique({
+              where: { mainlineId },
+            });
+            partitionId = partition?.id || null;
+          }
+
+          const sensor = await this.sensorsService.create({
+            sensorId,
+            sensorType: SensorType.BRANCH_JUNCTION_FLOW,
+            nodeId: branch.id,
+            partitionId,
+            description: `Auto-placed branch sensor at ${branch.nodeId} (connectivity: ${branch.children.length})`,
+            isActive: true,
+          });
+
+          placedSensors.push({
+            sensorId: sensor.sensorId,
+            sensorType: sensor.sensorType,
+            nodeId: sensor.nodeId,
+            nodeType: branch.nodeType,
+            partitionId: sensor.partitionId,
+            location: branch.location,
+          });
+
+          nodesWithSensors.add(branch.id);
+          branchCount++;
+        } catch (error) {
+          this.logger.error(
+            `Failed to place sensor at branch ${branch.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
+            error instanceof Error ? error.stack : undefined,
+          );
+          // Continue with other sensors
+        }
+      }
     }
 
     this.logger.log(
-      `Auto-placement complete: ${mainlineCount} mainline sensors, ${householdCount} household sensors`,
+      `Auto-placement complete: ${mainlineCount} mainline, ${junctionCount} junction, ${branchCount} branch sensors (total: ${placedSensors.length}/${targetCount})`,
     );
 
     return {
@@ -211,6 +285,8 @@ export class AutoPlacementService {
       sensors: placedSensors,
       summary: {
         mainlineSensors: mainlineCount,
+        junctionSensors: junctionCount,
+        branchSensors: branchCount,
         householdSensors: householdCount,
       },
     };

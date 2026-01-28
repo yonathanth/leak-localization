@@ -120,13 +120,22 @@ export class SensorsController {
 
   @Post('auto-place')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Automatically place sensors on all mainlines and households' })
+  @ApiOperation({ summary: 'Automatically place sensors strategically (prioritizes MAINLINE nodes, then high-connectivity JUNCTION nodes)' })
   @ApiQuery({
     name: 'networkId',
     required: true,
     type: String,
     description: 'Network ID',
     example: 'uuid-here',
+  })
+  @ApiQuery({
+    name: 'targetCount',
+    required: false,
+    type: Number,
+    description: 'Target number of sensors to place (default: 12)',
+    example: 12,
+    minimum: 1,
+    maximum: 1000,
   })
   @ApiResponse({
     status: 201,
@@ -135,13 +144,22 @@ export class SensorsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'No network nodes found, invalid request, or network ID missing',
+    description: 'No network nodes found, invalid request, network ID missing, or invalid targetCount',
   })
-  async autoPlace(@Query('networkId') networkId: string) {
+  async autoPlace(
+    @Query('networkId') networkId: string,
+    @Query('targetCount') targetCount?: string,
+  ) {
     if (!networkId) {
       throw new BadRequestException('Network ID is required');
     }
-    return this.autoPlacementService.autoPlaceSensors(networkId);
+    const count = targetCount ? parseInt(targetCount, 10) : 12;
+    if (isNaN(count) || count < 1 || count > 1000) {
+      throw new BadRequestException(
+        'targetCount must be a number between 1 and 1000',
+      );
+    }
+    return this.autoPlacementService.autoPlaceSensors(networkId, count);
   }
 }
 

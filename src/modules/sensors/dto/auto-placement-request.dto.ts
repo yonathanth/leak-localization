@@ -1,12 +1,18 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString, IsInt, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class AutoPlacementRequestDto {
   @ApiPropertyOptional({
-    description: 'Optional network ID to filter nodes',
-    example: 'uuid-here',
+    description: 'Target number of sensors to place (default: 12)',
+    example: 12,
+    minimum: 1,
+    maximum: 1000,
   })
   @IsOptional()
-  @IsString()
-  networkId?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  targetCount?: number;
 }

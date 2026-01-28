@@ -27,7 +27,10 @@ import { NetworkNodeResponseDto } from './dto/network-node-response.dto';
 import { ImportResponseDto } from './dto/import-response.dto';
 import { SensitivityMatrixStatsDto } from './dto/sensitivity-matrix-stats.dto';
 import { SensitivityMatrixStatusDto } from './dto/sensitivity-matrix-status.dto';
+import { SensitivityMatrixEntryDto } from './dto/sensitivity-matrix-entry.dto';
+import { CoverageAnalysisDto } from './dto/coverage-analysis.dto';
 import { SensitivityMatrixService } from './services/sensitivity-matrix.service';
+import { CoverageAnalysisService } from './services/coverage-analysis.service';
 import { EpanetImportDto } from './dto/epanet-import.dto';
 import { NodeType } from '@prisma/client';
 
@@ -37,6 +40,7 @@ export class NetworkController {
   constructor(
     private readonly networkService: NetworkService,
     private readonly sensitivityMatrixService: SensitivityMatrixService,
+    private readonly coverageAnalysisService: CoverageAnalysisService,
   ) {}
 
   @Post('nodes')
@@ -237,6 +241,145 @@ export class NetworkController {
   })
   async getMatrixStats(@Query('networkId') networkId?: string) {
     return this.sensitivityMatrixService.getMatrixStats(networkId);
+  }
+
+  @Get('sensitivity-matrix')
+  @ApiOperation({ summary: 'Get sensitivity matrix entries (paginated)' })
+  @ApiQuery({
+    name: 'networkId',
+    required: true,
+    type: String,
+    description: 'Network ID',
+    example: 'uuid-here',
+  })
+  @ApiQuery({
+    name: 'leakNodeId',
+    required: false,
+    type: String,
+    description: 'Filter by leak node ID',
+    example: 'uuid-here',
+  })
+  @ApiQuery({
+    name: 'sensorId',
+    required: false,
+    type: String,
+    description: 'Filter by sensor ID',
+    example: 'uuid-here',
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number',
+    example: 1,
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Items per page (max 1000)',
+    example: 100,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated matrix entries',
+    schema: {
+      type: 'object',
+      properties: {
+        data: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/SensitivityMatrixEntryDto' },
+        },
+        total: { type: 'number', example: 1200 },
+        page: { type: 'number', example: 1 },
+        limit: { type: 'number', example: 100 },
+      },
+    },
+  })
+  async getMatrix(
+    @Query('networkId') networkId: string,
+    @Query('leakNodeId') leakNodeId?: string,
+    @Query('sensorId') sensorId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    if (!networkId) {
+      throw new BadRequestException('Network ID is required');
+    }
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 100;
+    return this.sensitivityMatrixService.findAll(
+      networkId,
+      leakNodeId,
+      sensorId,
+      pageNum,
+      limitNum,
+    );
+  }
+
+  @Get('sensitivity-matrix/node/:nodeId')
+  @ApiOperation({ summary: 'Get sensitivity matrix entries for a specific leak node' })
+  @ApiParam({
+    name: 'nodeId',
+    description: 'Leak node UUID',
+    example: 'uuid-here',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Matrix entries for the leak node',
+    type: [SensitivityMatrixEntryDto],
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Leak node not found',
+  })
+  async getMatrixByLeakNode(@Param('nodeId') nodeId: string) {
+    return this.sensitivityMatrixService.findByLeakNode(nodeId);
+  }
+
+  @Get('sensitivity-matrix/sensor/:sensorId')
+  @ApiOperation({ summary: 'Get sensitivity matrix entries for a specific sensor' })
+  @ApiParam({
+    name: 'sensorId',
+    description: 'Sensor UUID',
+    example: 'uuid-here',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Matrix entries for the sensor',
+    type: [SensitivityMatrixEntryDto],
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Sensor not found',
+  })
+  async getMatrixBySensor(@Param('sensorId') sensorId: string) {
+    return this.sensitivityMatrixService.findBySensor(sensorId);
+  }
+
+  @Get('coverage-analysis')
+  @ApiOperation({ summary: 'Analyze sensor coverage for a network' })
+  @ApiQuery({
+    name: 'networkId',
+    required: true,
+    type: String,
+    description: 'Network ID',
+    example: 'uuid-here',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Coverage analysis results',
+    type: CoverageAnalysisDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Network ID missing or network not found',
+  })
+  async getCoverageAnalysis(@Query('networkId') networkId: string) {
+    if (!networkId) {
+      throw new BadRequestException('Network ID is required');
+    }
+    return this.coverageAnalysisService.analyzeCoverage(networkId);
   }
 }
 

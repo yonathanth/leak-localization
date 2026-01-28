@@ -386,4 +386,115 @@ export class SensitivityMatrixService {
       throw error;
     }
   }
+
+  async findAll(
+    networkId: string,
+    leakNodeId?: string,
+    sensorId?: string,
+    page: number = 1,
+    limit: number = 100,
+  ) {
+    if (limit > 1000) {
+      limit = 1000;
+    }
+    const skip = (page - 1) * limit;
+
+    const where: any = {
+      networkId,
+      ...(leakNodeId && { leakNodeId }),
+      ...(sensorId && { sensorId }),
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.sensitivityMatrix.findMany({
+        where,
+        include: {
+          leakNode: {
+            select: {
+              id: true,
+              nodeId: true,
+              nodeType: true,
+              epanetNodeId: true,
+            },
+          },
+          sensor: {
+            select: {
+              id: true,
+              sensorId: true,
+              sensorType: true,
+            },
+          },
+        },
+        skip,
+        take: limit,
+        orderBy: {
+          createdAt: 'desc',
+        },
+      }),
+      this.prisma.sensitivityMatrix.count({ where }),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+    };
+  }
+
+  async findByLeakNode(leakNodeId: string) {
+    const entries = await this.prisma.sensitivityMatrix.findMany({
+      where: { leakNodeId },
+      include: {
+        leakNode: {
+          select: {
+            id: true,
+            nodeId: true,
+            nodeType: true,
+            epanetNodeId: true,
+          },
+        },
+        sensor: {
+          select: {
+            id: true,
+            sensorId: true,
+            sensorType: true,
+          },
+        },
+      },
+      orderBy: {
+        sensitivityValue: 'desc',
+      },
+    });
+
+    return entries;
+  }
+
+  async findBySensor(sensorId: string) {
+    const entries = await this.prisma.sensitivityMatrix.findMany({
+      where: { sensorId },
+      include: {
+        leakNode: {
+          select: {
+            id: true,
+            nodeId: true,
+            nodeType: true,
+            epanetNodeId: true,
+          },
+        },
+        sensor: {
+          select: {
+            id: true,
+            sensorId: true,
+            sensorType: true,
+          },
+        },
+      },
+      orderBy: {
+        sensitivityValue: 'desc',
+      },
+    });
+
+    return entries;
+  }
 }

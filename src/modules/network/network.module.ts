@@ -6,6 +6,7 @@ import { EpanetParserService } from './services/epanet-parser.service';
 import { SensitivityMatrixService } from './services/sensitivity-matrix.service';
 import { StorageService } from './services/storage.service';
 import { EpanetSimulationService } from './services/epanet-simulation.service';
+import { CoverageAnalysisService } from './services/coverage-analysis.service';
 
 @Module({
   imports: [PrismaModule],
@@ -16,6 +17,7 @@ import { EpanetSimulationService } from './services/epanet-simulation.service';
     SensitivityMatrixService,
     StorageService,
     EpanetSimulationService,
+    CoverageAnalysisService,
   ],
   exports: [NetworkService, SensitivityMatrixService],
 })

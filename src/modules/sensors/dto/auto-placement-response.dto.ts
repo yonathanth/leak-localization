@@ -51,8 +51,20 @@ export class AutoPlacementSummaryDto {
   mainlineSensors: number;
 
   @ApiProperty({
+    description: 'Number of junction sensors placed',
+    example: 6,
+  })
+  junctionSensors: number;
+
+  @ApiProperty({
+    description: 'Number of branch sensors placed',
+    example: 1,
+  })
+  branchSensors: number;
+
+  @ApiProperty({
     description: 'Number of household sensors placed',
-    example: 445,
+    example: 0,
   })
   householdSensors: number;
 }
