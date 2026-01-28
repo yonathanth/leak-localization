@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma/prisma.service';
 import { SensitivityMatrixService } from '../../network/services/sensitivity-matrix.service';
+import { NetworkService } from '../../network/network.service';
 import { LeakDetection } from '@prisma/client';
 
 export interface LocalizationResult {
@@ -22,10 +23,12 @@ export interface LocalizationResult {
 @Injectable()
 export class LocalizationService {
   private readonly DEFAULT_BASELINE_TIME_WINDOW = 3600; // 1 hour in seconds
+  private readonly DEFAULT_DETECTION_TIME_WINDOW = 300; // 5 minutes in seconds
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly sensitivityMatrixService: SensitivityMatrixService,
+    private readonly networkService: NetworkService,
   ) {}
 
   async localizeLeakForDetection(
@@ -42,19 +45,30 @@ export class LocalizationService {
       );
     }
 
-    const timeWindow =
+    // Use detection's timeWindow for the anomaly window, or default
+    const detectionTimeWindow =
+      detection.timeWindow ?? this.DEFAULT_DETECTION_TIME_WINDOW;
+
+    // Baseline time window (how far back before the anomaly window to look for "normal" values)
+    const baselineWindow =
       baselineTimeWindow ?? this.DEFAULT_BASELINE_TIME_WINDOW;
 
-    // Calculate baseline readings (filtered by networkId)
-    const baselineReadings = await this.calculateBaselineReadings(
+    // Calculate baseline readings:
+    // Baseline interval: [T - detectionTimeWindow - baselineWindow, T - detectionTimeWindow]
+    // This is the "normal" period before the anomaly
+    const baselineReadings = await this.calculateBaselineReadingsWithWindow(
       detection.timestamp,
-      timeWindow,
+      detectionTimeWindow,
+      baselineWindow,
       networkId,
     );
 
-    // Get observed changes (filtered by networkId)
-    const observedChanges = await this.getObservedChanges(
+    // Get observed changes:
+    // Anomaly interval: [T - detectionTimeWindow, T]
+    // Compare to baseline to get changes
+    const observedChanges = await this.getObservedChangesWithWindow(
       detection.timestamp,
+      detectionTimeWindow,
       baselineReadings,
       networkId,
     );
@@ -66,7 +80,7 @@ export class LocalizationService {
     }
 
     // Get all potential leak nodes from sensitivity matrix (filtered by networkId)
-    const potentialNodes = await this.prisma.sensitivityMatrix.findMany({
+    let potentialNodes = await this.prisma.sensitivityMatrix.findMany({
       where: { networkId },
       select: {
         leakNodeId: true,
@@ -78,6 +92,22 @@ export class LocalizationService {
       throw new BadRequestException(
         'No potential leak nodes found in sensitivity matrix',
       );
+    }
+
+    // Filter candidates by DMA when partitionId is set
+    if (detection.partitionId) {
+      const dmaNodeIds = await this.networkService.getNodeIdsInDma(
+        detection.partitionId,
+      );
+      potentialNodes = potentialNodes.filter(({ leakNodeId }) =>
+        dmaNodeIds.has(leakNodeId),
+      );
+
+      if (potentialNodes.length === 0) {
+        throw new BadRequestException(
+          `No potential leak nodes found in DMA ${detection.partitionId}`,
+        );
+      }
     }
 
     // Calculate scores for each potential node
@@ -137,6 +167,122 @@ export class LocalizationService {
     };
   }
 
+  /**
+   * Calculate baseline readings with proper windowing.
+   * Baseline interval: [T - detectionTimeWindow - baselineWindow, T - detectionTimeWindow]
+   * This is the "normal" period before the anomaly window.
+   */
+  async calculateBaselineReadingsWithWindow(
+    timestamp: Date,
+    detectionTimeWindow: number,
+    baselineWindow: number,
+    networkId: string,
+  ): Promise<Map<string, number>> {
+    // Baseline ends where anomaly starts
+    const baselineEnd = new Date(
+      timestamp.getTime() - detectionTimeWindow * 1000,
+    );
+    // Baseline starts baselineWindow before that
+    const baselineStart = new Date(
+      baselineEnd.getTime() - baselineWindow * 1000,
+    );
+
+    // Get all active sensors for this network
+    const sensors = await this.prisma.sensor.findMany({
+      where: {
+        networkId,
+        isActive: true,
+      },
+      select: { id: true, sensorId: true },
+    });
+
+    const baselineMap = new Map<string, number>();
+
+    // For each sensor, calculate average reading in the baseline window
+    for (const sensor of sensors) {
+      const readings = await this.prisma.sensorReading.findMany({
+        where: {
+          sensorId: sensor.id,
+          timestamp: {
+            gte: baselineStart,
+            lt: baselineEnd,
+          },
+        },
+        select: {
+          flowValue: true,
+        },
+      });
+
+      if (readings.length > 0) {
+        const sum = readings.reduce((acc, r) => acc + r.flowValue, 0);
+        const average = sum / readings.length;
+        baselineMap.set(sensor.sensorId, average);
+      }
+    }
+
+    return baselineMap;
+  }
+
+  /**
+   * Get observed changes with proper windowing.
+   * Anomaly interval: [T - detectionTimeWindow, T]
+   * Returns the difference between anomaly average and baseline average.
+   */
+  async getObservedChangesWithWindow(
+    timestamp: Date,
+    detectionTimeWindow: number,
+    baselineReadings: Map<string, number>,
+    networkId: string,
+  ): Promise<Map<string, number>> {
+    const changes = new Map<string, number>();
+
+    // Anomaly window: [T - detectionTimeWindow, T]
+    const anomalyStart = new Date(
+      timestamp.getTime() - detectionTimeWindow * 1000,
+    );
+    const anomalyEnd = timestamp;
+
+    // Get all active sensors for this network
+    const sensors = await this.prisma.sensor.findMany({
+      where: {
+        networkId,
+        isActive: true,
+      },
+      select: { id: true, sensorId: true },
+    });
+
+    for (const sensor of sensors) {
+      const baseline = baselineReadings.get(sensor.sensorId);
+      if (baseline === undefined) {
+        continue; // Skip sensors without baseline
+      }
+
+      // Get average reading in the anomaly window
+      const readings = await this.prisma.sensorReading.findMany({
+        where: {
+          sensorId: sensor.id,
+          timestamp: {
+            gte: anomalyStart,
+            lte: anomalyEnd,
+          },
+        },
+        select: {
+          flowValue: true,
+        },
+      });
+
+      if (readings.length > 0) {
+        const sum = readings.reduce((acc, r) => acc + r.flowValue, 0);
+        const anomalyAverage = sum / readings.length;
+        const observedChange = anomalyAverage - baseline;
+        changes.set(sensor.sensorId, observedChange);
+      }
+    }
+
+    return changes;
+  }
+
+  // Keep legacy methods for backward compatibility with non-DMA paths
   async calculateBaselineReadings(
     timestamp: Date,
     timeWindow: number,

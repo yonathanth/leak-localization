@@ -170,7 +170,7 @@ export class LeaksService {
     partitionId: string,
     timestamp: Date,
     threshold: number = this.DEFAULT_THRESHOLD,
-    timeWindow?: number,
+    timeWindow: number = this.DEFAULT_TIME_WINDOW,
   ) {
     // Get partition to get networkId
     const partition = await this.prisma.networkPartition.findUnique({
@@ -185,9 +185,11 @@ export class LeaksService {
       throw new NotFoundException(`Partition with ID ${partitionId} not found`);
     }
 
+    // Calculate DMA mass balance using time-windowed aggregation
     const massBalance = await this.massBalanceService.calculateDmaMassBalance(
       partitionId,
       timestamp,
+      timeWindow,
     );
 
     const detections: any[] = [];

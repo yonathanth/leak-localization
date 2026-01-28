@@ -166,10 +166,23 @@ export class MassBalanceService {
     return totalOutflow;
   }
 
+  /**
+   * Calculate mass balance for a DMA (partition).
+   * @param partitionId - The partition UUID
+   * @param timestamp - End of the time window
+   * @param timeWindow - Time window in seconds for aggregation (required for DMA detection)
+   */
   async calculateDmaMassBalance(
     partitionId: string,
     timestamp: Date,
+    timeWindow: number,
   ): Promise<MassBalanceResult> {
+    if (!timeWindow || timeWindow <= 0) {
+      throw new Error(
+        'timeWindow is required for DMA mass balance calculation',
+      );
+    }
+
     const partition = await this.prisma.networkPartition.findUnique({
       where: { id: partitionId },
       include: {
@@ -197,14 +210,15 @@ export class MassBalanceService {
       throw new Error(`Partition with ID ${partitionId} not found`);
     }
 
-    // Inflow: mainline entry sensor
+    // Inflow: mainline entry sensor (aggregated over time window)
     let inflow = 0;
     const inflowSensors: string[] = [];
     for (const sensor of partition.mainline.sensors) {
       if (sensor.sensorType === 'MAINLINE_FLOW') {
-        const reading = await this.getLatestReadingForSensor(
+        const reading = await this.getAggregatedReadingForSensor(
           sensor.id,
           timestamp,
+          timeWindow,
         );
         if (reading !== null) {
           inflow += reading;
@@ -213,7 +227,7 @@ export class MassBalanceService {
       }
     }
 
-    // Outflow: sum of all household sensors in DMA
+    // Outflow: sum of all household sensors in DMA (aggregated over time window)
     let outflow = 0;
     const outflowSensors: string[] = [];
     for (const sensor of partition.sensors) {
@@ -221,9 +235,10 @@ export class MassBalanceService {
         sensor.node.nodeType === NodeType.HOUSEHOLD ||
         sensor.sensorType === 'HOUSEHOLD_FLOW'
       ) {
-        const reading = await this.getLatestReadingForSensor(
+        const reading = await this.getAggregatedReadingForSensor(
           sensor.id,
           timestamp,
+          timeWindow,
         );
         if (reading !== null) {
           outflow += reading;
@@ -263,6 +278,41 @@ export class MassBalanceService {
     });
 
     return reading ? reading.flowValue : null;
+  }
+
+  /**
+   * Get aggregated (averaged) reading for a sensor over a time window.
+   * @param sensorId - The sensor UUID
+   * @param timestamp - End of the time window
+   * @param timeWindowSeconds - Length of the time window in seconds
+   * @returns Average flow value over the window, or null if no readings
+   */
+  async getAggregatedReadingForSensor(
+    sensorId: string,
+    timestamp: Date,
+    timeWindowSeconds: number,
+  ): Promise<number | null> {
+    const startTime = new Date(timestamp.getTime() - timeWindowSeconds * 1000);
+
+    const readings = await this.prisma.sensorReading.findMany({
+      where: {
+        sensorId,
+        timestamp: {
+          gte: startTime,
+          lte: timestamp,
+        },
+      },
+      select: {
+        flowValue: true,
+      },
+    });
+
+    if (readings.length === 0) {
+      return null;
+    }
+
+    const sum = readings.reduce((acc, r) => acc + r.flowValue, 0);
+    return sum / readings.length;
   }
 
   async getLatestReadingsForTimestamp(

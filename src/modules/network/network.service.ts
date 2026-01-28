@@ -401,5 +401,61 @@ export class NetworkService {
 
     return null;
   }
+
+  /**
+   * Get all node IDs that belong to a DMA (partition).
+   * Traverses from the mainline downstream to collect all descendants.
+   * @param partitionId - The partition UUID
+   * @returns Set of node IDs in the DMA
+   */
+  async getNodeIdsInDma(partitionId: string): Promise<Set<string>> {
+    const partition = await this.prisma.networkPartition.findUnique({
+      where: { id: partitionId },
+      select: {
+        mainlineId: true,
+      },
+    });
+
+    if (!partition) {
+      throw new NotFoundException(
+        `Partition with ID ${partitionId} not found`,
+      );
+    }
+
+    const nodeIds = new Set<string>();
+
+    // BFS to collect all nodes downstream from mainline
+    const queue: string[] = [partition.mainlineId];
+
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+
+      if (nodeIds.has(currentId)) {
+        continue; // Already visited
+      }
+
+      nodeIds.add(currentId);
+
+      // Get children of current node
+      const node = await this.prisma.networkNode.findUnique({
+        where: { id: currentId },
+        include: {
+          children: {
+            select: { id: true },
+          },
+        },
+      });
+
+      if (node && node.children) {
+        for (const child of node.children) {
+          if (!nodeIds.has(child.id)) {
+            queue.push(child.id);
+          }
+        }
+      }
+    }
+
+    return nodeIds;
+  }
 }
 
