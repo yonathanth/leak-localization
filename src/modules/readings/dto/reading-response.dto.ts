@@ -5,6 +5,12 @@ export class ReadingResponseDto {
   @ApiProperty({ example: 'uuid-here' })
   id: string;
 
+  @ApiProperty({
+    description: 'Network ID this reading belongs to',
+    example: 'uuid-here',
+  })
+  networkId: string;
+
   @ApiProperty({ example: 'MAIN_01' })
   sensorId: string;
 

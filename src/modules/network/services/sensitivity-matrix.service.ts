@@ -36,13 +36,15 @@ export class SensitivityMatrixService {
     private readonly epanetSimulation: EpanetSimulationService,
   ) {}
 
-  async checkMatrixExists(): Promise<boolean> {
-    const count = await this.prisma.sensitivityMatrix.count();
+  async checkMatrixExists(networkId?: string): Promise<boolean> {
+    const where = networkId ? { networkId } : {};
+    const count = await this.prisma.sensitivityMatrix.count({ where });
     return count > 0;
   }
 
-  async getMatrixStats(): Promise<MatrixStats> {
-    const count = await this.prisma.sensitivityMatrix.count();
+  async getMatrixStats(networkId?: string): Promise<MatrixStats> {
+    const where = networkId ? { networkId } : {};
+    const count = await this.prisma.sensitivityMatrix.count({ where });
 
     if (count === 0) {
       return {
@@ -53,6 +55,7 @@ export class SensitivityMatrixService {
 
     // Get the latest entry to find last computed time
     const latest = await this.prisma.sensitivityMatrix.findFirst({
+      where,
       orderBy: {
         createdAt: 'desc',
       },
@@ -70,13 +73,17 @@ export class SensitivityMatrixService {
 
   async generateMatrix(
     force: boolean = false,
-    networkId?: string,
+    networkId: string,
   ): Promise<GenerationStatus> {
-    // Check if matrix already exists
-    const exists = await this.checkMatrixExists();
+    if (!networkId) {
+      throw new BadRequestException('Network ID is required for matrix generation');
+    }
+
+    // Check if matrix already exists for this network
+    const exists = await this.checkMatrixExists(networkId);
 
     if (exists && !force) {
-      const stats = await this.getMatrixStats();
+      const stats = await this.getMatrixStats(networkId);
       return {
         status: 'completed',
         matrixStats: stats,
@@ -120,7 +127,7 @@ export class SensitivityMatrixService {
 
   private async generateMatrixAsync(
     force: boolean,
-    networkId?: string,
+    networkId: string,
   ): Promise<void> {
     this.generationStatus = {
       status: 'in_progress',
@@ -135,14 +142,28 @@ export class SensitivityMatrixService {
     let workspace: any = null;
 
     try {
-      // Delete existing matrix if force is true
-      if (force) {
-        await this.prisma.sensitivityMatrix.deleteMany({});
+      // Validate network exists
+      const networkRecord = await this.prisma.network.findUnique({
+        where: { id: networkId },
+      });
+
+      if (!networkRecord) {
+        throw new BadRequestException(
+          `Network with ID ${networkId} not found`,
+        );
       }
 
-      // Get all network nodes (potential leak locations) with EPANET node IDs
+      // Delete existing matrix for this network if force is true
+      if (force) {
+        await this.prisma.sensitivityMatrix.deleteMany({
+          where: { networkId },
+        });
+      }
+
+      // Get all network nodes (potential leak locations) with EPANET node IDs for this network
       const nodes = await this.prisma.networkNode.findMany({
         where: {
+          networkId,
           epanetNodeId: {
             not: null,
           },
@@ -154,9 +175,10 @@ export class SensitivityMatrixService {
         },
       });
 
-      // Get all sensors with their EPANET node IDs
+      // Get all sensors with their EPANET node IDs for this network
       const sensors = await this.prisma.sensor.findMany({
         where: {
+          networkId,
           isActive: true,
         },
         include: {
@@ -170,48 +192,27 @@ export class SensitivityMatrixService {
 
       if (nodes.length === 0) {
         throw new BadRequestException(
-          'No network nodes found. Import network first.',
+          `No network nodes found for network ${networkId}. Import network first.`,
         );
       }
 
       if (sensors.length === 0) {
         throw new BadRequestException(
-          'No sensors found. Register sensors first.',
+          `No sensors found for network ${networkId}. Register sensors first.`,
         );
       }
 
-      // Find network ID if not provided (use first node's network or find from storage)
-      let actualNetworkId = networkId;
-      if (!actualNetworkId) {
-        // Try to find network ID from stored files
-        // For now, we'll use a default approach - get the first available network
-        // In a real scenario, you might want to track network IDs in the database
-        const firstNode = nodes[0];
-        // We'll need to determine network ID from context
-        // For simplicity, assume we can derive it or use a default
-        this.logger.warn(
-          'Network ID not provided, attempting to find from storage',
-        );
-      }
-
-      // Load EPANET file
-      if (!actualNetworkId) {
+      const filePath = this.storageService.getEpanetFilePath(networkId);
+      if (!this.storageService.fileExists(networkId)) {
         throw new BadRequestException(
-          'Network ID is required. Please provide networkId parameter or ensure network was imported with file storage.',
-        );
-      }
-
-      const filePath = this.storageService.getEpanetFilePath(actualNetworkId);
-      if (!this.storageService.fileExists(actualNetworkId)) {
-        throw new BadRequestException(
-          `EPANET file not found for network ${actualNetworkId}. Please re-import the network.`,
+          `EPANET file not found for network ${networkId}. Please re-import the network.`,
         );
       }
 
       this.logger.log(`Loading EPANET network from ${filePath}`);
-      const network = await this.epanetSimulation.loadNetwork(filePath);
-      project = network.project;
-      workspace = network.workspace;
+      const epanetNetwork = await this.epanetSimulation.loadNetwork(filePath);
+      project = epanetNetwork.project;
+      workspace = epanetNetwork.workspace;
 
       // Get sensor EPANET node IDs
       const sensorEpanetNodeIds = sensors
@@ -241,6 +242,7 @@ export class SensitivityMatrixService {
       // Generate matrix entries in batches
       const batchSize = 1000;
       const matrixEntries: Array<{
+        networkId: string;
         leakNodeId: string;
         sensorId: string;
         sensitivityValue: number;
@@ -290,6 +292,7 @@ export class SensitivityMatrixService {
                   sensitivity.get(sensor.node.epanetNodeId) || 0;
 
                 matrixEntries.push({
+                  networkId,
                   leakNodeId: node.id,
                   sensorId: sensor.id,
                   sensitivityValue,

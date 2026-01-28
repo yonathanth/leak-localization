@@ -5,6 +5,14 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 export class QueryLeakDetectionsDto extends PaginationDto {
   @ApiPropertyOptional({
+    description: 'Filter by network ID',
+    example: 'uuid-here',
+  })
+  @IsOptional()
+  @IsString()
+  networkId?: string;
+
+  @ApiPropertyOptional({
     description: 'Filter by node ID',
     example: 'uuid-here',
   })

@@ -32,9 +32,8 @@ export class ImportResponseDto {
   message: string;
 
   @ApiProperty({
-    description: 'Network ID for file storage',
+    description: 'Network ID created during import (use this for subsequent operations)',
     example: 'uuid-here',
-    required: false,
   })
-  networkId?: string;
+  networkId: string;
 }

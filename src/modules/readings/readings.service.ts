@@ -13,9 +13,13 @@ export class ReadingsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(createReadingDto: CreateReadingDto) {
-    // Validate sensor exists
-    const sensor = await this.prisma.sensor.findUnique({
+    // Validate sensor exists and get networkId (sensorId is not unique alone, use findFirst)
+    const sensor = await this.prisma.sensor.findFirst({
       where: { sensorId: createReadingDto.sensorId },
+      select: {
+        id: true,
+        networkId: true,
+      },
     });
 
     if (!sensor) {
@@ -26,12 +30,19 @@ export class ReadingsService {
 
     return this.prisma.sensorReading.create({
       data: {
+        networkId: sensor.networkId,
         sensorId: sensor.id,
         flowValue: createReadingDto.flowValue,
         timestamp: new Date(createReadingDto.timestamp),
         source: createReadingDto.source || 'MANUAL',
       },
       include: {
+        network: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
         sensor: {
           select: {
             id: true,
@@ -56,6 +67,11 @@ export class ReadingsService {
           in: sensorIds,
         },
       },
+      select: {
+        id: true,
+        sensorId: true,
+        networkId: true,
+      },
     });
 
     if (sensors.length !== sensorIds.length) {
@@ -66,16 +82,22 @@ export class ReadingsService {
       );
     }
 
-    // Create sensor ID to UUID mapping
-    const sensorMap = new Map(sensors.map((s) => [s.sensorId, s.id]));
+    // Create sensor ID to UUID and networkId mapping
+    const sensorMap = new Map(
+      sensors.map((s) => [s.sensorId, { id: s.id, networkId: s.networkId }]),
+    );
 
     // Prepare data for batch insert
-    const data = readings.map((reading) => ({
-      sensorId: sensorMap.get(reading.sensorId)!,
-      flowValue: reading.flowValue,
-      timestamp: new Date(reading.timestamp),
-      source: reading.source || 'MANUAL',
-    }));
+    const data = readings.map((reading) => {
+      const sensor = sensorMap.get(reading.sensorId)!;
+      return {
+        networkId: sensor.networkId,
+        sensorId: sensor.id,
+        flowValue: reading.flowValue,
+        timestamp: new Date(reading.timestamp),
+        source: reading.source || 'MANUAL',
+      };
+    });
 
     // Use transaction for batch insert
     const result = await this.prisma.$transaction(
@@ -83,6 +105,12 @@ export class ReadingsService {
         this.prisma.sensorReading.create({
           data: item,
           include: {
+            network: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
             sensor: {
               select: {
                 id: true,
@@ -102,17 +130,30 @@ export class ReadingsService {
   }
 
   async findAll(query: QueryReadingsDto) {
-    const { page = 1, limit = 10, sensorId, startDate, endDate } = query;
+    const { page = 1, limit = 10, networkId, sensorId, startDate, endDate } = query;
     const skip = (page - 1) * limit;
 
     const where: Prisma.SensorReadingWhereInput = {};
 
+    if (networkId) {
+      where.networkId = networkId;
+    }
+
     if (sensorId) {
-      const sensor = await this.prisma.sensor.findUnique({
-        where: { sensorId },
+      const sensor = await this.prisma.sensor.findFirst({
+        where: networkId ? { networkId, sensorId } : { sensorId },
       });
       if (sensor) {
         where.sensorId = sensor.id;
+        // Ensure networkId consistency if both are provided
+        if (networkId && sensor.networkId !== networkId) {
+          return {
+            data: [],
+            total: 0,
+            page,
+            limit,
+          };
+        }
       } else {
         // Return empty result if sensor not found
         return {
@@ -138,6 +179,12 @@ export class ReadingsService {
       this.prisma.sensorReading.findMany({
         where,
         include: {
+          network: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
           sensor: {
             select: {
               id: true,
@@ -167,6 +214,7 @@ export class ReadingsService {
     const reading = await this.prisma.sensorReading.findUnique({
       where: { id },
       include: {
+        network: true,
         sensor: true,
       },
     });
@@ -195,6 +243,11 @@ export class ReadingsService {
           in: sensorIds,
         },
       },
+      select: {
+        id: true,
+        sensorId: true,
+        networkId: true,
+      },
     });
 
     if (sensors.length !== sensorIds.length) {
@@ -205,8 +258,10 @@ export class ReadingsService {
       );
     }
 
-    // Create sensor ID to UUID mapping
-    const sensorMap = new Map(sensors.map((s) => [s.sensorId, s.id]));
+    // Create sensor ID to UUID and networkId mapping
+    const sensorMap = new Map(
+      sensors.map((s) => [s.sensorId, { id: s.id, networkId: s.networkId }]),
+    );
 
     // Validate and prepare data for batch insert (all with same timestamp)
     const data = readings.map((reading) => {
@@ -220,15 +275,16 @@ export class ReadingsService {
         );
       }
 
-      const sensorUuid = sensorMap.get(reading.sensorId);
-      if (!sensorUuid) {
+      const sensor = sensorMap.get(reading.sensorId);
+      if (!sensor) {
         throw new NotFoundException(
           `Sensor ${reading.sensorId} not found in mapping`,
         );
       }
 
       return {
-        sensorId: sensorUuid,
+        networkId: sensor.networkId,
+        sensorId: sensor.id,
         flowValue: reading.flowValue,
         timestamp,
         source,

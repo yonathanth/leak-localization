@@ -13,6 +13,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiParam,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { LeaksService } from './leaks.service';
 import { DetectLeaksDto } from './dto/detect-leaks.dto';
@@ -93,13 +94,31 @@ export class LeaksController {
 
   @Get('detections/latest')
   @ApiOperation({ summary: 'Get most recent leak detections' })
+  @ApiQuery({
+    name: 'networkId',
+    required: false,
+    type: String,
+    description: 'Filter by network ID',
+    example: 'uuid-here',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Number of detections to return',
+    example: 10,
+  })
   @ApiResponse({
     status: 200,
     description: 'List of most recent leak detections',
     type: [LeakDetectionResponseDto],
   })
-  async getLatest() {
-    return this.leaksService.getLatest();
+  async getLatest(
+    @Query('networkId') networkId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const limitNum = limit ? parseInt(limit, 10) : 10;
+    return this.leaksService.getLatest(limitNum, networkId);
   }
 
   @Post('localize')

@@ -5,6 +5,12 @@ export class LeakDetectionResponseDto {
   @ApiProperty({ example: 'uuid-here' })
   id: string;
 
+  @ApiProperty({
+    description: 'Network ID this detection belongs to',
+    example: 'uuid-here',
+  })
+  networkId: string;
+
   @ApiProperty({ example: 'uuid-here' })
   nodeId: string;
 

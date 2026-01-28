@@ -11,6 +11,13 @@ import { NodeType } from '@prisma/client';
 
 export class CreateNetworkNodeDto {
   @ApiProperty({
+    description: 'Network ID this node belongs to',
+    example: 'uuid-here',
+  })
+  @IsString()
+  networkId: string;
+
+  @ApiProperty({
     description: 'Unique node identifier (e.g., MAIN_01, HH_001)',
     example: 'MAIN_01',
   })

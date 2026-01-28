@@ -30,15 +30,34 @@ export class AutoPlacementService {
     private readonly sensorsService: SensorsService,
   ) {}
 
-  async autoPlaceSensors(networkId?: string): Promise<AutoPlacementResult> {
-    // Get all MAINLINE nodes
-    const mainlines = await this.prisma.networkNode.findMany({
-      where: { nodeType: NodeType.MAINLINE },
+  async autoPlaceSensors(networkId: string): Promise<AutoPlacementResult> {
+    if (!networkId) {
+      throw new BadRequestException('Network ID is required for auto-placement');
+    }
+
+    // Validate network exists
+    const network = await this.prisma.network.findUnique({
+      where: { id: networkId },
     });
 
-    // Get all HOUSEHOLD nodes
+    if (!network) {
+      throw new BadRequestException(`Network with ID ${networkId} not found`);
+    }
+
+    // Get all MAINLINE nodes for this network
+    const mainlines = await this.prisma.networkNode.findMany({
+      where: {
+        networkId,
+        nodeType: NodeType.MAINLINE,
+      },
+    });
+
+    // Get all HOUSEHOLD nodes for this network
     const households = await this.prisma.networkNode.findMany({
-      where: { nodeType: NodeType.HOUSEHOLD },
+      where: {
+        networkId,
+        nodeType: NodeType.HOUSEHOLD,
+      },
     });
 
     if (mainlines.length === 0 && households.length === 0) {
@@ -60,13 +79,18 @@ export class AutoPlacementService {
       const mainline = mainlines[i];
       const sensorId = `MAIN_${String(i + 1).padStart(2, '0')}`;
 
-      // Check if sensor already exists
+      // Check if sensor already exists in this network
       const existing = await this.prisma.sensor.findUnique({
-        where: { sensorId },
+        where: {
+          networkId_sensorId: {
+            networkId,
+            sensorId,
+          },
+        },
       });
 
       if (existing) {
-        this.logger.warn(`Sensor ${sensorId} already exists, skipping`);
+        this.logger.warn(`Sensor ${sensorId} already exists in network ${networkId}, skipping`);
         continue;
       }
 
@@ -112,13 +136,18 @@ export class AutoPlacementService {
         const globalIndex = i + batchIndex;
         const sensorId = `HH_${String(globalIndex + 1).padStart(3, '0')}`;
 
-        // Check if sensor already exists
+        // Check if sensor already exists in this network
         const existing = await this.prisma.sensor.findUnique({
-          where: { sensorId },
+          where: {
+            networkId_sensorId: {
+              networkId,
+              sensorId,
+            },
+          },
         });
 
         if (existing) {
-          this.logger.warn(`Sensor ${sensorId} already exists, skipping`);
+          this.logger.warn(`Sensor ${sensorId} already exists in network ${networkId}, skipping`);
           return null;
         }
 

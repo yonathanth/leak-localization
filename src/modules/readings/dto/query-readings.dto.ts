@@ -5,6 +5,14 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 export class QueryReadingsDto extends PaginationDto {
   @ApiPropertyOptional({
+    description: 'Filter by network ID',
+    example: 'uuid-here',
+  })
+  @IsOptional()
+  @IsString()
+  networkId?: string;
+
+  @ApiPropertyOptional({
     description: 'Filter by sensor ID',
     example: 'MAIN_01',
   })

@@ -56,13 +56,18 @@ export class LeaksService {
       );
       detections.push(...dmaDetections);
     } else {
-      // Detect at all junctions/nodes
-      const nodes = await this.prisma.networkNode.findMany({
-        where: {
-          nodeType: {
-            in: [NodeType.JUNCTION, NodeType.BRANCH],
-          },
+      // Detect at all junctions/nodes (filter by networkId if provided)
+      const where: any = {
+        nodeType: {
+          in: [NodeType.JUNCTION, NodeType.BRANCH],
         },
+      };
+      if (options.networkId) {
+        where.networkId = options.networkId;
+      }
+
+      const nodes = await this.prisma.networkNode.findMany({
+        where,
       });
 
       for (const node of nodes) {
@@ -101,17 +106,30 @@ export class LeaksService {
     // Determine severity
     const severity = this.determineSeverity(massBalance.imbalance);
 
-    // Get partition if node belongs to one
+    // Get partition if node belongs to one, and get networkId
     const node = await this.prisma.networkNode.findUnique({
       where: { id: nodeId },
-      include: { partition: true },
+      select: {
+        id: true,
+        networkId: true,
+        partition: {
+          select: {
+            id: true,
+          },
+        },
+      },
     });
+
+    if (!node) {
+      throw new NotFoundException(`Node with ID ${nodeId} not found`);
+    }
 
     // Create detection
     const detection = await this.prisma.leakDetection.create({
       data: {
+        networkId: node.networkId,
         nodeId,
-        partitionId: node?.partition?.id,
+        partitionId: node.partition?.id,
         flowImbalance: massBalance.imbalance,
         severity,
         status: LeakStatus.DETECTED,
@@ -121,6 +139,13 @@ export class LeaksService {
         threshold,
       },
       include: {
+        network: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
         node: {
           select: {
             id: true,
@@ -147,6 +172,19 @@ export class LeaksService {
     threshold: number = this.DEFAULT_THRESHOLD,
     timeWindow?: number,
   ) {
+    // Get partition to get networkId
+    const partition = await this.prisma.networkPartition.findUnique({
+      where: { id: partitionId },
+      select: {
+        id: true,
+        networkId: true,
+      },
+    });
+
+    if (!partition) {
+      throw new NotFoundException(`Partition with ID ${partitionId} not found`);
+    }
+
     const massBalance = await this.massBalanceService.calculateDmaMassBalance(
       partitionId,
       timestamp,
@@ -160,6 +198,7 @@ export class LeaksService {
 
       const detection = await this.prisma.leakDetection.create({
         data: {
+          networkId: partition.networkId,
           nodeId: massBalance.nodeId,
           partitionId,
           flowImbalance: massBalance.imbalance,
@@ -171,6 +210,13 @@ export class LeaksService {
           threshold,
         },
         include: {
+          network: {
+            select: {
+              id: true,
+              name: true,
+              description: true,
+            },
+          },
           node: {
             select: {
               id: true,
@@ -195,10 +241,14 @@ export class LeaksService {
   }
 
   async findAll(query: QueryLeakDetectionsDto) {
-    const { page = 1, limit = 10, nodeId, partitionId, status, severity, startDate, endDate } = query;
+    const { page = 1, limit = 10, networkId, nodeId, partitionId, status, severity, startDate, endDate } = query;
     const skip = (page - 1) * limit;
 
     const where: Prisma.LeakDetectionWhereInput = {};
+
+    if (networkId) {
+      where.networkId = networkId;
+    }
 
     if (nodeId) {
       where.nodeId = nodeId;
@@ -230,6 +280,13 @@ export class LeaksService {
       this.prisma.leakDetection.findMany({
         where,
         include: {
+          network: {
+            select: {
+              id: true,
+              name: true,
+              description: true,
+            },
+          },
           node: {
             select: {
               id: true,
@@ -266,6 +323,7 @@ export class LeaksService {
     const detection = await this.prisma.leakDetection.findUnique({
       where: { id },
       include: {
+        network: true,
         node: true,
         partition: true,
       },
@@ -278,9 +336,18 @@ export class LeaksService {
     return detection;
   }
 
-  async getLatest(limit: number = 10) {
+  async getLatest(limit: number = 10, networkId?: string) {
+    const where = networkId ? { networkId } : {};
     return this.prisma.leakDetection.findMany({
+      where,
       include: {
+        network: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
         node: {
           select: {
             id: true,

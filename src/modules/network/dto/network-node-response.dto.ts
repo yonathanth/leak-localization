@@ -5,6 +5,12 @@ export class NetworkNodeResponseDto {
   @ApiProperty({ example: 'uuid-here' })
   id: string;
 
+  @ApiProperty({
+    description: 'Network ID this node belongs to',
+    example: 'uuid-here',
+  })
+  networkId: string;
+
   @ApiProperty({ example: 'MAIN_01' })
   nodeId: string;
 

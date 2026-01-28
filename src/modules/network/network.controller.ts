@@ -9,6 +9,7 @@ import {
   HttpStatus,
   UseInterceptors,
   UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
@@ -57,6 +58,13 @@ export class NetworkController {
   @Get('nodes')
   @ApiOperation({ summary: 'Get all network nodes' })
   @ApiQuery({
+    name: 'networkId',
+    required: false,
+    type: String,
+    description: 'Filter by network ID',
+    example: 'uuid-here',
+  })
+  @ApiQuery({
     name: 'nodeType',
     required: false,
     enum: NodeType,
@@ -67,8 +75,11 @@ export class NetworkController {
     description: 'List of network nodes',
     type: [NetworkNodeResponseDto],
   })
-  findAll(@Query('nodeType') nodeType?: NodeType) {
-    return this.networkService.findAll(nodeType);
+  findAll(
+    @Query('networkId') networkId?: string,
+    @Query('nodeType') nodeType?: NodeType,
+  ) {
+    return this.networkService.findAll(nodeType, networkId);
   }
 
   @Get('nodes/:id')
@@ -98,6 +109,13 @@ export class NetworkController {
     description: 'Network node identifier (e.g., MAIN_01)',
     example: 'MAIN_01',
   })
+  @ApiQuery({
+    name: 'networkId',
+    required: false,
+    type: String,
+    description: 'Network ID to search in (recommended since nodeId is unique per network)',
+    example: 'uuid-here',
+  })
   @ApiResponse({
     status: 200,
     description: 'Network node details',
@@ -107,8 +125,11 @@ export class NetworkController {
     status: 404,
     description: 'Network node not found',
   })
-  findByNodeId(@Param('nodeId') nodeId: string) {
-    return this.networkService.findByNodeId(nodeId);
+  findByNodeId(
+    @Param('nodeId') nodeId: string,
+    @Query('networkId') networkId?: string,
+  ) {
+    return this.networkService.findByNodeId(nodeId, networkId);
   }
 
   @Post('import/epanet')
@@ -149,9 +170,9 @@ export class NetworkController {
   })
   @ApiQuery({
     name: 'networkId',
-    required: false,
+    required: true,
     type: String,
-    description: 'Network ID from import (required if multiple networks)',
+    description: 'Network ID from import',
     example: 'uuid-here',
   })
   @ApiResponse({
@@ -166,12 +187,15 @@ export class NetworkController {
   })
   @ApiResponse({
     status: 400,
-    description: 'No network nodes or sensors found',
+    description: 'No network nodes or sensors found, or network ID missing',
   })
   async generateMatrix(
     @Query('force') force?: string,
     @Query('networkId') networkId?: string,
   ) {
+    if (!networkId) {
+      throw new BadRequestException('Network ID is required');
+    }
     const forceRegenerate = force === 'true' || force === '1';
     return this.sensitivityMatrixService.generateMatrix(
       forceRegenerate,
@@ -181,24 +205,38 @@ export class NetworkController {
 
   @Get('sensitivity-matrix/status')
   @ApiOperation({ summary: 'Get sensitivity matrix generation status' })
+  @ApiQuery({
+    name: 'networkId',
+    required: false,
+    type: String,
+    description: 'Filter by network ID',
+    example: 'uuid-here',
+  })
   @ApiResponse({
     status: 200,
     description: 'Generation status',
     type: SensitivityMatrixStatusDto,
   })
-  async getMatrixStatus() {
+  async getMatrixStatus(@Query('networkId') networkId?: string) {
     return this.sensitivityMatrixService.getGenerationStatus();
   }
 
   @Get('sensitivity-matrix/stats')
   @ApiOperation({ summary: 'Get sensitivity matrix statistics' })
+  @ApiQuery({
+    name: 'networkId',
+    required: false,
+    type: String,
+    description: 'Filter by network ID',
+    example: 'uuid-here',
+  })
   @ApiResponse({
     status: 200,
     description: 'Matrix statistics',
     type: SensitivityMatrixStatsDto,
   })
-  async getMatrixStats() {
-    return this.sensitivityMatrixService.getMatrixStats();
+  async getMatrixStats(@Query('networkId') networkId?: string) {
+    return this.sensitivityMatrixService.getMatrixStats(networkId);
   }
 }
 

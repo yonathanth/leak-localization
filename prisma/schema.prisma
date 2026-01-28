@@ -45,9 +45,29 @@ enum LeakStatus {
   FALSE_POSITIVE
 }
 
+model Network {
+  id            String   @id @default(uuid())
+  name          String?
+  description   String?
+  epanetFileId  String?  // Reference to stored EPANET file (for backward compatibility)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  nodes         NetworkNode[]
+  partitions    NetworkPartition[]
+  sensors       Sensor[]
+  readings      SensorReading[]
+  matrices      SensitivityMatrix[]
+  detections    LeakDetection[]
+
+  @@map("networks")
+}
+
 model NetworkNode {
   id            String   @id @default(uuid())
-  nodeId        String   @unique // EPANET ID or custom ID (e.g., MAIN_01, HH_001)
+  networkId     String   // Required foreign key to Network
+  nodeId        String   // EPANET ID or custom ID (e.g., MAIN_01, HH_001)
   nodeType      NodeType
   parentId      String?
   parent        NetworkNode? @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
@@ -61,11 +81,15 @@ model NetworkNode {
   updatedAt     DateTime @updatedAt
 
   // Relations
+  network       Network  @relation(fields: [networkId], references: [id], onDelete: Cascade)
   sensors       Sensor[]
   partition     NetworkPartition?
   sensitivityMatrixLeaks SensitivityMatrix[] @relation("LeakSensitivity")
   leakDetections LeakDetection[]
 
+  @@unique([networkId, nodeId])
+  @@index([networkId])
+  @@index([networkId, nodeType])
   @@index([parentId])
   @@index([nodeType])
   @@index([zoneCode, branchCode])
@@ -74,7 +98,8 @@ model NetworkNode {
 
 model NetworkPartition {
   id            String   @id @default(uuid())
-  partitionId   String   @unique // DMA_MAIN_01
+  networkId     String   // Required foreign key to Network
+  partitionId   String   // DMA_MAIN_01
   mainlineId    String   @unique // One partition per mainline (one-to-one)
   mainline      NetworkNode @relation(fields: [mainlineId], references: [id])
   name          String?
@@ -83,15 +108,19 @@ model NetworkPartition {
   updatedAt     DateTime @updatedAt
 
   // Relations
+  network       Network  @relation(fields: [networkId], references: [id], onDelete: Cascade)
   sensors       Sensor[]
   leakDetections LeakDetection[]
 
+  @@unique([networkId, partitionId])
+  @@index([networkId])
   @@map("network_partitions")
 }
 
 model Sensor {
   id            String   @id @default(uuid())
-  sensorId      String   @unique // MAIN_01, JUNC_01, HH_001
+  networkId     String   // Required foreign key to Network (derived from node but stored for performance)
+  sensorId      String   // MAIN_01, JUNC_01, HH_001
   sensorType    SensorType
   nodeId        String
   node          NetworkNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
@@ -103,9 +132,12 @@ model Sensor {
   updatedAt     DateTime @updatedAt
 
   // Relations
+  network       Network  @relation(fields: [networkId], references: [id], onDelete: Cascade)
   readings      SensorReading[]
   sensitivityMatrixReadings SensitivityMatrix[] @relation("SensorSensitivity")
 
+  @@unique([networkId, sensorId])
+  @@index([networkId])
   @@index([nodeId])
   @@index([partitionId])
   @@index([sensorType])
@@ -114,6 +146,7 @@ model Sensor {
 
 model SensorReading {
   id            String   @id @default(uuid())
+  networkId     String   // Required foreign key to Network (derived from sensor, stored for performance)
   sensorId      String
   sensor        Sensor   @relation(fields: [sensorId], references: [id], onDelete: Cascade)
   flowValue     Float    // Flow in L/s
@@ -121,6 +154,10 @@ model SensorReading {
   source        DataSource @default(MANUAL)
   createdAt     DateTime @default(now())
 
+  // Relations
+  network       Network  @relation(fields: [networkId], references: [id], onDelete: Cascade)
+
+  @@index([networkId, timestamp])
   @@index([sensorId, timestamp])
   @@index([timestamp])
   @@index([sensorId])
@@ -129,16 +166,20 @@ model SensorReading {
 
 model SensitivityMatrix {
   id              String   @id @default(uuid())
+  networkId       String   // Required foreign key to Network
   leakNodeId      String   // Which node has the leak
   sensorId        String   // Which sensor is affected
   sensitivityValue Float   // How much sensor reading changes per unit leak (L/s per L/s)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   
+  // Relations
+  network         Network  @relation(fields: [networkId], references: [id], onDelete: Cascade)
   leakNode        NetworkNode @relation("LeakSensitivity", fields: [leakNodeId], references: [id], onDelete: Cascade)
   sensor          Sensor @relation("SensorSensitivity", fields: [sensorId], references: [id], onDelete: Cascade)
   
-  @@unique([leakNodeId, sensorId])
+  @@unique([networkId, leakNodeId, sensorId])
+  @@index([networkId])
   @@index([leakNodeId])
   @@index([sensorId])
   @@map("sensitivity_matrix")
@@ -146,6 +187,7 @@ model SensitivityMatrix {
 
 model LeakDetection {
   id              String   @id @default(uuid())
+  networkId       String   // Required foreign key to Network (derived from node, stored for performance)
   nodeId          String   // Node where leak was detected
   partitionId     String?  // DMA where leak was detected (optional)
   flowImbalance   Float    // Flow imbalance in L/s (inflow - outflow)
@@ -161,9 +203,13 @@ model LeakDetection {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   
+  // Relations
+  network         Network  @relation(fields: [networkId], references: [id], onDelete: Cascade)
   node            NetworkNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
   partition       NetworkPartition? @relation(fields: [partitionId], references: [id], onDelete: SetNull)
   
+  @@index([networkId])
+  @@index([networkId, status])
   @@index([nodeId])
   @@index([partitionId])
   @@index([status])

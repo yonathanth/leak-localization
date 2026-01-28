@@ -7,6 +7,7 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -51,13 +52,20 @@ export class SensorsController {
 
   @Get()
   @ApiOperation({ summary: 'Get all sensors' })
+  @ApiQuery({
+    name: 'networkId',
+    required: false,
+    type: String,
+    description: 'Filter by network ID',
+    example: 'uuid-here',
+  })
   @ApiResponse({
     status: 200,
     description: 'List of all sensors',
     type: [SensorResponseDto],
   })
-  findAll() {
-    return this.sensorsService.findAll();
+  findAll(@Query('networkId') networkId?: string) {
+    return this.sensorsService.findAll(networkId);
   }
 
   @Get(':id')
@@ -87,6 +95,13 @@ export class SensorsController {
     description: 'Sensor identifier (e.g., MAIN_01)',
     example: 'MAIN_01',
   })
+  @ApiQuery({
+    name: 'networkId',
+    required: false,
+    type: String,
+    description: 'Network ID to search in (recommended since sensorId is unique per network)',
+    example: 'uuid-here',
+  })
   @ApiResponse({
     status: 200,
     description: 'Sensor details',
@@ -96,8 +111,11 @@ export class SensorsController {
     status: 404,
     description: 'Sensor not found',
   })
-  findBySensorId(@Param('sensorId') sensorId: string) {
-    return this.sensorsService.findBySensorId(sensorId);
+  findBySensorId(
+    @Param('sensorId') sensorId: string,
+    @Query('networkId') networkId?: string,
+  ) {
+    return this.sensorsService.findBySensorId(sensorId, networkId);
   }
 
   @Post('auto-place')
@@ -105,8 +123,9 @@ export class SensorsController {
   @ApiOperation({ summary: 'Automatically place sensors on all mainlines and households' })
   @ApiQuery({
     name: 'networkId',
-    required: false,
-    description: 'Optional network ID',
+    required: true,
+    type: String,
+    description: 'Network ID',
     example: 'uuid-here',
   })
   @ApiResponse({
@@ -116,9 +135,12 @@ export class SensorsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'No network nodes found or invalid request',
+    description: 'No network nodes found, invalid request, or network ID missing',
   })
-  async autoPlace(@Query('networkId') networkId?: string) {
+  async autoPlace(@Query('networkId') networkId: string) {
+    if (!networkId) {
+      throw new BadRequestException('Network ID is required');
+    }
     return this.autoPlacementService.autoPlaceSensors(networkId);
   }
 }

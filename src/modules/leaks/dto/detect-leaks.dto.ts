@@ -10,6 +10,14 @@ import {
 
 export class DetectLeaksDto {
   @ApiPropertyOptional({
+    description: 'Network ID to detect leaks in',
+    example: 'uuid-here',
+  })
+  @IsOptional()
+  @IsString()
+  networkId?: string;
+
+  @ApiPropertyOptional({
     description:
       'Specific timestamp to analyze (ISO 8601). If not provided, uses current time',
     example: '2024-01-25T10:00:00.000Z',

@@ -5,6 +5,12 @@ export class SensorResponseDto {
   @ApiProperty({ example: 'uuid-here' })
   id: string;
 
+  @ApiProperty({
+    description: 'Network ID this sensor belongs to',
+    example: 'uuid-here',
+  })
+  networkId: string;
+
   @ApiProperty({ example: 'MAIN_01' })
   sensorId: string;
 

@@ -23,18 +23,34 @@ export class NetworkService {
   ) {}
 
   async create(createNetworkNodeDto: CreateNetworkNodeDto) {
-    // Check if nodeId already exists
+    // Validate network exists
+    const network = await this.prisma.network.findUnique({
+      where: { id: createNetworkNodeDto.networkId },
+    });
+
+    if (!network) {
+      throw new NotFoundException(
+        `Network with ID ${createNetworkNodeDto.networkId} not found`,
+      );
+    }
+
+    // Check if nodeId already exists in this network
     const existing = await this.prisma.networkNode.findUnique({
-      where: { nodeId: createNetworkNodeDto.nodeId },
+      where: {
+        networkId_nodeId: {
+          networkId: createNetworkNodeDto.networkId,
+          nodeId: createNetworkNodeDto.nodeId,
+        },
+      },
     });
 
     if (existing) {
       throw new ConflictException(
-        `Node with ID ${createNetworkNodeDto.nodeId} already exists`,
+        `Node with ID ${createNetworkNodeDto.nodeId} already exists in network ${createNetworkNodeDto.networkId}`,
       );
     }
 
-    // Validate parent exists if provided
+    // Validate parent exists if provided and belongs to same network
     if (createNetworkNodeDto.parentId) {
       const parent = await this.prisma.networkNode.findUnique({
         where: { id: createNetworkNodeDto.parentId },
@@ -45,22 +61,42 @@ export class NetworkService {
           `Parent node with ID ${createNetworkNodeDto.parentId} not found`,
         );
       }
+
+      if (parent.networkId !== createNetworkNodeDto.networkId) {
+        throw new BadRequestException(
+          `Parent node belongs to a different network. Parent network: ${parent.networkId}, Current network: ${createNetworkNodeDto.networkId}`,
+        );
+      }
     }
 
     return this.prisma.networkNode.create({
       data: createNetworkNodeDto,
       include: {
+        network: true,
         parent: true,
         children: true,
       },
     });
   }
 
-  async findAll(nodeType?: NodeType) {
-    const where = nodeType ? { nodeType } : {};
+  async findAll(nodeType?: NodeType, networkId?: string) {
+    const where: any = {};
+    if (nodeType) {
+      where.nodeType = nodeType;
+    }
+    if (networkId) {
+      where.networkId = networkId;
+    }
     return this.prisma.networkNode.findMany({
       where,
       include: {
+        network: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+          },
+        },
         parent: {
           select: {
             id: true,
@@ -86,6 +122,7 @@ export class NetworkService {
     const node = await this.prisma.networkNode.findUnique({
       where: { id },
       include: {
+        network: true,
         parent: true,
         children: true,
         sensors: true,
@@ -99,10 +136,15 @@ export class NetworkService {
     return node;
   }
 
-  async findByNodeId(nodeId: string) {
-    const node = await this.prisma.networkNode.findUnique({
-      where: { nodeId },
+  async findByNodeId(nodeId: string, networkId?: string) {
+    const where: any = { nodeId };
+    if (networkId) {
+      where.networkId = networkId;
+    }
+    const node = await this.prisma.networkNode.findFirst({
+      where,
       include: {
+        network: true,
         parent: true,
         children: true,
         sensors: true,
@@ -110,7 +152,9 @@ export class NetworkService {
     });
 
     if (!node) {
-      throw new NotFoundException(`Network node with nodeId ${nodeId} not found`);
+      throw new NotFoundException(
+        `Network node with nodeId ${nodeId}${networkId ? ` in network ${networkId}` : ''} not found`,
+      );
     }
 
     return node;
@@ -145,7 +189,7 @@ export class NetworkService {
     }
 
     try {
-      // Generate unique network ID for file storage
+      // Generate unique network ID
       const networkId = randomUUID();
       this.logger.log(`Importing network with ID: ${networkId}`);
 
@@ -154,45 +198,32 @@ export class NetworkService {
       const { nodes: networkNodes, nodeMap } =
         this.epanetParser.mapToNetworkNodes(parsedData);
 
-      // Create nodes in transaction with optimized batch operations
-      const createdNodes = await this.prisma.$transaction(
+      // Create Network and nodes in transaction
+      const { network, createdNodes } = await this.prisma.$transaction(
         async (tx) => {
-          const nodeIdToUuid = new Map<string, string>();
-          const nodesToCreate: any[] = [];
-          const existingNodeIds: string[] = [];
-
-          // Check which nodes already exist (batch query)
-          const existingNodes = await tx.networkNode.findMany({
-            where: {
-              nodeId: {
-                in: networkNodes.map((n) => n.nodeId),
-              },
-            },
-            select: {
-              id: true,
-              nodeId: true,
+          // Create Network record first
+          const network = await tx.network.create({
+            data: {
+              id: networkId,
+              epanetFileId: networkId, // Store networkId for file storage compatibility
             },
           });
 
-          // Map existing nodes
-          for (const existing of existingNodes) {
-            nodeIdToUuid.set(existing.nodeId, existing.id);
-            existingNodeIds.push(existing.nodeId);
-          }
+          const nodeIdToUuid = new Map<string, string>();
+          const nodesToCreate: any[] = [];
 
-          // Prepare nodes to create (only new ones)
+          // Prepare nodes to create (all nodes belong to this network)
           for (const nodeData of networkNodes) {
-            if (!existingNodeIds.includes(nodeData.nodeId)) {
-              nodesToCreate.push({
-                nodeId: nodeData.nodeId,
-                nodeType: nodeData.nodeType,
-                epanetNodeId: nodeData.epanetNodeId,
-                location: nodeData.location,
-              });
-            }
+            nodesToCreate.push({
+              networkId: networkId,
+              nodeId: nodeData.nodeId,
+              nodeType: nodeData.nodeType,
+              epanetNodeId: nodeData.epanetNodeId,
+              location: nodeData.location,
+            });
           }
 
-          // Batch create new nodes
+          // Batch create nodes
           if (nodesToCreate.length > 0) {
             // Use createMany for better performance, then fetch to get IDs
             await tx.networkNode.createMany({
@@ -203,6 +234,7 @@ export class NetworkService {
             // Fetch created nodes to get their IDs
             const createdNodes = await tx.networkNode.findMany({
               where: {
+                networkId: networkId,
                 nodeId: {
                   in: nodesToCreate.map((n) => n.nodeId),
                 },
@@ -251,14 +283,14 @@ export class NetworkService {
             }
           }
 
-          // Return all nodes (existing + newly created)
-          return await tx.networkNode.findMany({
+          // Return network and all nodes
+          const allNodes = await tx.networkNode.findMany({
             where: {
-              nodeId: {
-                in: networkNodes.map((n) => n.nodeId),
-              },
+              networkId: networkId,
             },
           });
+
+          return { network, createdNodes: allNodes };
         },
         {
           timeout: 300000, // 5 minutes timeout for very large networks
@@ -267,7 +299,7 @@ export class NetworkService {
       );
 
       // Create DMAs for mainlines
-      const dmAsCreated = await this.createDmasForMainlines();
+      const dmAsCreated = await this.createDmasForMainlines(networkId);
 
       // Store .inp file for future EPANET simulations
       try {
@@ -299,9 +331,12 @@ export class NetworkService {
     }
   }
 
-  async createDmasForMainlines() {
+  async createDmasForMainlines(networkId: string) {
     const mainlines = await this.prisma.networkNode.findMany({
-      where: { nodeType: NodeType.MAINLINE },
+      where: {
+        networkId,
+        nodeType: NodeType.MAINLINE,
+      },
     });
 
     const createdDmas: Awaited<
@@ -321,6 +356,7 @@ export class NetworkService {
       const partitionId = `DMA_${mainline.nodeId}`;
       const dma = await this.prisma.networkPartition.create({
         data: {
+          networkId,
           partitionId,
           mainlineId: mainline.id,
           name: `DMA for ${mainline.nodeId}`,

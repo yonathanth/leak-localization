@@ -32,27 +32,31 @@ export class LocalizationService {
     detection: LeakDetection,
     baselineTimeWindow?: number,
   ): Promise<LocalizationResult> {
-    // Check if sensitivity matrix exists
-    const matrixExists = await this.sensitivityMatrixService.checkMatrixExists();
+    const networkId = detection.networkId;
+
+    // Check if sensitivity matrix exists for this network
+    const matrixExists = await this.sensitivityMatrixService.checkMatrixExists(networkId);
     if (!matrixExists) {
       throw new BadRequestException(
-        'Sensitivity matrix not found. Please generate the matrix first.',
+        `Sensitivity matrix not found for network ${networkId}. Please generate the matrix first.`,
       );
     }
 
     const timeWindow =
       baselineTimeWindow ?? this.DEFAULT_BASELINE_TIME_WINDOW;
 
-    // Calculate baseline readings
+    // Calculate baseline readings (filtered by networkId)
     const baselineReadings = await this.calculateBaselineReadings(
       detection.timestamp,
       timeWindow,
+      networkId,
     );
 
-    // Get observed changes
+    // Get observed changes (filtered by networkId)
     const observedChanges = await this.getObservedChanges(
       detection.timestamp,
       baselineReadings,
+      networkId,
     );
 
     if (observedChanges.size === 0) {
@@ -61,8 +65,9 @@ export class LocalizationService {
       );
     }
 
-    // Get all potential leak nodes from sensitivity matrix
+    // Get all potential leak nodes from sensitivity matrix (filtered by networkId)
     const potentialNodes = await this.prisma.sensitivityMatrix.findMany({
+      where: { networkId },
       select: {
         leakNodeId: true,
       },
@@ -83,6 +88,7 @@ export class LocalizationService {
         leakNodeId,
         observedChanges,
         detection.flowImbalance,
+        networkId,
       );
       candidateScores.push({ nodeId: leakNodeId, score });
     }
@@ -102,6 +108,7 @@ export class LocalizationService {
     const predictedChanges = await this.getPredictedChanges(
       topCandidate.nodeId,
       detection.flowImbalance,
+      networkId,
     );
 
     // Build sensor changes array
@@ -133,12 +140,16 @@ export class LocalizationService {
   async calculateBaselineReadings(
     timestamp: Date,
     timeWindow: number,
+    networkId: string,
   ): Promise<Map<string, number>> {
     const startTime = new Date(timestamp.getTime() - timeWindow * 1000);
 
-    // Get all active sensors
+    // Get all active sensors for this network
     const sensors = await this.prisma.sensor.findMany({
-      where: { isActive: true },
+      where: {
+        networkId,
+        isActive: true,
+      },
       select: { id: true, sensorId: true },
     });
 
@@ -172,12 +183,16 @@ export class LocalizationService {
   async getObservedChanges(
     timestamp: Date,
     baselineReadings: Map<string, number>,
+    networkId: string,
   ): Promise<Map<string, number>> {
     const changes = new Map<string, number>();
 
-    // Get all active sensors
+    // Get all active sensors for this network
     const sensors = await this.prisma.sensor.findMany({
-      where: { isActive: true },
+      where: {
+        networkId,
+        isActive: true,
+      },
       select: { id: true, sensorId: true },
     });
 
@@ -216,10 +231,12 @@ export class LocalizationService {
     leakNodeId: string,
     observedChanges: Map<string, number>,
     estimatedLeakSize: number,
+    networkId: string,
   ): Promise<number> {
-    // Get sensitivity values for this leak node
+    // Get sensitivity values for this leak node (filtered by networkId)
     const sensitivityEntries = await this.prisma.sensitivityMatrix.findMany({
       where: {
+        networkId,
         leakNodeId,
       },
       include: {
@@ -316,9 +333,11 @@ export class LocalizationService {
   private async getPredictedChanges(
     leakNodeId: string,
     estimatedLeakSize: number,
+    networkId: string,
   ): Promise<Map<string, number>> {
     const sensitivityEntries = await this.prisma.sensitivityMatrix.findMany({
       where: {
+        networkId,
         leakNodeId,
       },
       include: {
